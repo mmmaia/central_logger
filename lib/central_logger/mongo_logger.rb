@@ -19,15 +19,8 @@ module CentralLogger
     def initialize(options={})
       path = options[:path] || File.join(Rails.root, "log/#{Rails.env}.log")
       level = options[:level] || DEBUG
+      super(path, level)
       internal_initialize
-      if disable_file_logging?
-        @level = level
-        @buffer        = {}
-        @auto_flushing = 1
-        @guard = Mutex.new
-      else
-        super(path, level)
-      end
     rescue => e
       # should use a config block for this
       Rails.env.production? ? (raise e) : (puts "Using BufferedLogger due to exception: " + e.message)
@@ -44,13 +37,14 @@ module CentralLogger
     end
 
     def add(severity, message = nil, progname = nil, &block)
+      $stdout.puts message
       if @level <= severity && message.present? && @mongo_record.present?
         # do not modify the original message used by the buffered logger
         msg = logging_colorized? ? message.gsub(/(\e(\[([\d;]*[mz]?))?)?/, '').strip : message
         @mongo_record[:messages][LOG_LEVEL_SYM[severity]] << msg
       end
       # may modify the original message
-      disable_file_logging? ? message : super
+      super
     end
 
     # Drop the capped_collection and recreate it
@@ -93,10 +87,6 @@ module CentralLogger
         configure
         connect
         check_for_collection
-      end
-
-      def disable_file_logging?
-        @db_configuration.fetch('disable_file_logging', false)
       end
 
       def configure
@@ -142,14 +132,21 @@ module CentralLogger
       end
 
       def connect
-        @mongo_connection ||= Mongo::Connection.new(@db_configuration['host'],
-                                                    @db_configuration['port'],
-                                                    :auto_reconnect => true).db(@db_configuration['database'])
+        if @db_configuration['uri']
+          uri = URI.parse(@db_configuration['uri'])
+          @mongo_connection ||= Mongo::Connection.from_uri(@db_configuration['uri'], :auto_reconnect => true).db(uri.path.delete('/'))
+          @authenticated = @mongo_connection.authenticate(uri.user, uri.password)
+        else
+          @mongo_connection ||= Mongo::Connection.new(@db_configuration['host'],
+                                                      @db_configuration['port'],
+                                                      :auto_reconnect => true,
+                                                      :timeout => 5).db(@db_configuration['database'])
 
-        if @db_configuration['username'] && @db_configuration['password']
-          # the driver stores credentials in case reconnection is required
-          @authenticated = @mongo_connection.authenticate(@db_configuration['username'],
-                                                          @db_configuration['password'])
+          if @db_configuration['username'] && @db_configuration['password']
+            # the driver stores credentials in case reconnection is required
+            @authenticated = @mongo_connection.authenticate(@db_configuration['username'],
+                                                            @db_configuration['password'])
+          end
         end
       end
 
